@@ -4,6 +4,8 @@ from typing import List
 import unittest
 import alloc
 from collections import namedtuple
+from alloc_utils import get_live_ranges, get_max_live, range_cmp
+from functools import cmp_to_key
 
 
 COMMAND = './sim -i 1024'
@@ -53,6 +55,51 @@ def get_tests():
             expected=expected_output
         )
         yield test
+
+
+class TestUtils(unittest.TestCase):
+    
+    def test_get_live_range(self):
+        """get_live_range should outputs a valid list of live ranges
+        """
+        instructions = alloc.read_instructions(f"{DIR}/ri1.txt")
+        result = get_live_ranges(instructions)
+        expected = {
+            'r0': (0, 11),
+            'r1': (1, 9),
+            'r2': (2, 3),
+            'r3': (3, 6),
+            'r4': (4, 8),
+            'r5': (5, 7),
+            'r6': (6, 6),
+            'r7': (7, 7),
+            'r8': (8, 8),
+            'r9': (9, 9),
+            'r10': (10,10)
+        }
+        self.assertDictEqual(result, expected)
+
+
+    def test_max_live(self):
+        input_pairs = [
+            (0, 11), (1, 9), (2, 3), (3, 6), (4, 8),(5, 7), (6, 6), 
+            (7, 7), (8, 8), (9, 9), (10, 10)
+        ]
+        result = get_max_live(input_pairs)
+        self.assertEqual(result, 5)
+    
+
+    def test_range_cmp_sorts_based_on_live_ranges(self):
+        input_pairs = [
+            (None, 4, 0, 11), (None, 4, 1, 9), (None, 2, 2, 3), 
+            (None, 2, 3, 6), (None, 8, 4, 8)
+        ]
+        input_pairs.sort(key=cmp_to_key(range_cmp))
+        expected = [
+            (None, 2, 3, 6), (None, 2, 2, 3), (None, 4, 0, 11), 
+            (None, 4, 1, 9), (None, 8, 4, 8)
+        ]
+        self.assertEqual(input_pairs, expected)
 
 
 class SimpleAllocatorTest(unittest.TestCase):
