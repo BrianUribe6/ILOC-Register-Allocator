@@ -1,4 +1,3 @@
-__pycache__/alloc.cpython-37.pyc
-__pycache__/test.cpython-37.pyc
+*.pyc
 .vscode/settings.json
 .vscode/launch.json

@@ -102,12 +102,13 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(input_pairs, expected)
 
 
-class SimpleAllocatorTest(unittest.TestCase):
+class AllocatorTest(unittest.TestCase):
   
     def test_simple_allocator(self):
         for t in get_tests():
             for k in num_registers:
-                result = alloc.simple_allocator(t.instruction, k)
+                allocator = alloc.SimpleAlloc(t.instruction)
+                result = allocator.allocate(k)
                 out = get_output(t.cmd_input, result)[:-1]
                 self.assertEqual(
                     t.expected, out,
@@ -116,7 +117,15 @@ class SimpleAllocatorTest(unittest.TestCase):
 
 
     def test_top_down_allocator(self):
-        self.skipTest("Not implemented")
+        for t in get_tests():
+            for k in num_registers:
+                allocator = alloc.TopDownAlloc(t.instruction)
+                result = allocator.allocate(k)
+                out = get_output(t.cmd_input, result)[:-1]
+                self.assertEqual(
+                    t.expected, out,
+                    f"{t.block_name} failed with k = {k}"
+                ) 
 
     
     def test_bottom_up_allocator(self):

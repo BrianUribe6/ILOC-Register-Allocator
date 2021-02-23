@@ -2,6 +2,8 @@ import argparse
 import re
 from collections import Counter, defaultdict
 from typing import List, NamedTuple
+from functools import cmp_to_key
+from alloc_utils import *
 
 
 NUM_FEASIBLE = 2
@@ -187,119 +189,209 @@ class BottomUpAlloc:
             return f"Register{self.phy_name, self.vr_name, self.next}"
 
 
-
-
-def isregister(string) -> bool:
-    """Returns True if string is not an integer constant."""
-    return string is not None and not string.isdigit()
-
-
-def write_instructions(instructions):
-    for instruction in instructions:
-        print(instruction)
-
-
-def count_reg(instructions) -> Counter:
-    """computes the number of occurrences for each register"""
-    count = Counter()
-    for inst in instructions:
-        for i in range(1, len(inst)):
-            if isregister(inst[i]): #skip integer constants
-                count[inst[i]] += 1
+class SimpleAlloc:
+    def __init__(self, instructions) -> None:
+        self.instructions = instructions
+        self.count = get_reg_count(instructions)
+        self.used = [False] * NUM_FEASIBLE
+        self.bp = 'r0'  # base pointer
     
-    return count
 
-
-def spill(instr, var_name, offset, used):
-    """Inserts instructions to place/load a virtual register into an available
-    space in memory.
-    """
-    i = 0
-    for used_reg in used:
-        if not used_reg: break
-        i += 1
-    
-    i %= len(used)     # if all feasibles register are used then reuse r1.
-    used[i] = True
-    feasible_reg = f'r{i + 1}'
-    spill_code = None
-    if var_name == 'dst':
-        instr = instr._replace(dst=feasible_reg)
-        spill_code = Instruction('storeAI', feasible_reg, 'r0', offset)
-    else:
-        # we need to spill a source register.
-        new_value = {var_name: feasible_reg}
-        spill_code = Instruction('loadAI', 'r0', offset, feasible_reg)
-        instr = instr._replace(**new_value)
-
-    return instr, spill_code
-
-
-def simple_allocator(instructions, num_registers):
-    """
-    """
-    if num_registers < NUM_FEASIBLE:
-        raise ValueError(f"number of register must be at least {NUM_FEASIBLE}.")
-
-    result = []
-    count = count_reg(instructions)
-    total_vars = len(count) - ('r0' in count)
-    allocd, memory = {'r0': 'r0'}, {}
-    cur_offset = -4
-    # registers 1 to NUM_FEASIBLE are reserved. We will assign as many 
-    # physical registers as we can for the remaining k.
-    j = NUM_FEASIBLE + 1 if total_vars > num_registers else 1
-    for p in count.most_common():
-        reg, _ = p
-        if reg == 'r0': continue
-        if j <= num_registers:
-            allocd[reg] = f'r{j}'
-            j += 1
+    def spill(self, instr, param, offset):
+        """Inserts instructions to store/load a virtual register into an available
+        space in memory.
+        """
+        i = 0
+        for used_reg in self.used:
+            if not used_reg: break
+            i += 1
+        
+        i %= len(self.used)  # if all feasibles register are used then reuse r1.
+        self.used[i] = True
+        feasible_reg = f'r{i + 1}'
+        vr = instr[param]
+        self.loc[vr] = instr[param] = feasible_reg
+        
+        store = None
+        if param == 'dst':
+            # save this value to memory AFTER executing previous instruction
+            store = Instruction('storeAI', feasible_reg, self.bp, offset)
         else:
-            memory[reg] = cur_offset
-            cur_offset -= 4
-    # Rewrite instructions inserting spill code where needed. While keeping track 
-    # of which fesible registers are available to avoid reusing a register
-    # that is already an operand.
-    used = [False] * NUM_FEASIBLE   
-    for instr in instructions:
-        #check which of the registers needs to be spilled
-        inst_params = instr._asdict()
-        spill_code = {'storeAI':[], 'loadAI': []}
-        for i, var_name in enumerate(inst_params):
-            if i == 0: #skip instruction name
-                continue
-            reg = inst_params[var_name]
-            if reg in memory: #generate corresponding spill code
-                instr, spill_instr = spill(instr, var_name, memory[reg], used)
-                spill_code[spill_instr.opcode].append(spill_instr)
-            elif reg in allocd: # just assign a physical register 
-                assign = {var_name : allocd[reg]}
-                instr = instr._replace(**assign)
-        
-        result += spill_code['loadAI'] + [instr] + spill_code['storeAI']
-        used[0] = used[1] = False
-        
+            # load value from memory into source register
+            self.result.append(
+                Instruction('loadAI', self.bp, offset, feasible_reg)
+            )
 
-    return result
-        
-
-def top_down_allocator(instructions, k):
-    pass
-
-
-def get_vr_usage(instructions):
-    """returns a mapping of each virtual register to a list of occurrences.
-    """
-    usage = defaultdict(list)
-    for i in reversed(range(len(instructions))):
-        for reg in instructions[i][1:]:
-            if isregister(reg):
-                usage[reg].append(i)
+        return store
     
-    return usage
 
-               
+    def assign(self, k) -> tuple:
+        """Assigns the most used k - F virtual registers to physical registers.
+        The remaining ones are assigned to a memory location. 
+        F physical registers are reserved handle spill. Where F is the number of
+        feasible registers.
+        """
+        allocd, memory = {'r0': self.bp}, {}
+        offset = -4
+        total_vars = len(self.count) - (self.bp in self.count)
+        j = NUM_FEASIBLE + 1 if total_vars > k else 1
+        for p in self.count.most_common():
+            reg, _ = p
+            if reg == self.bp: continue
+            if j <= k:
+                allocd[reg] = f'r{j}'
+                j += 1
+            else:
+                memory[reg] = offset
+                offset -= 4
+        
+        return allocd, memory
+
+
+    def allocate(self, num_registers):
+        if num_registers < NUM_FEASIBLE:
+            raise ValueError(f"number of register must be at least {NUM_FEASIBLE}.")
+
+        self.result = []
+        allocd, memory = self.assign(num_registers)
+        self.loc = {}  # keeps track of vr assigned to feasible registers
+
+        for instr in self.instructions:
+            new_inst = instr._asdict()
+            store_inst = None
+            #check which of the registers needs to be spilled
+            for i, param in enumerate(new_inst):
+                if i == 0: #skip instruction name
+                    continue
+                reg = new_inst[param]
+
+                if reg in self.loc: # reuse the same feasible register
+                    new_inst[param] = self.loc[reg]
+                else:
+                    if reg in memory:
+                        #generate spill code
+                        pos = memory[reg]
+                        store_inst = self.spill(new_inst, param, pos)
+                    elif reg in allocd:
+                        # just assign a physical register  
+                        new_inst[param] = allocd[reg]
+            
+            self.result.append(Instruction(**new_inst))
+            if store_inst:
+                self.result.append(store_inst)
+            
+            self.loc.clear()
+            self.used[0] = self.used[1] = False
+            
+
+        return self.result
+
+
+class TopDownAlloc:
+    
+    def __init__(self, instructions) -> None:
+        self.instructions = instructions
+        self.count = get_reg_count(instructions)
+        self.live_ranges = get_live_ranges(instructions)
+        self.r1_free = True
+        self.feasible = [f'r{j}' for j in range(1, NUM_FEASIBLE + 1)]
+
+
+    def _alloc(self, vr):
+        if len(self.free) > 0:
+            reg = self.free.pop()
+            self.loc[vr] = reg
+            return reg
+        
+        if vr not in self.mem:
+            #create a new entry in memory for this value
+            self.mem[vr] = self.pos
+            self.pos -= 4
+        
+        reg = 'r1' if self.r1_free else 'r2'
+        self.r1_free = not self.r1_free
+        return reg
+        
+
+    def _ensure(self, vr):
+        if vr in self.loc:
+            reg = self.loc[vr]
+        
+        elif vr in self.mem:
+            pos = self.mem[vr]
+            reg = 'r1' if self.r1_free else 'r2'
+            self.r1_free = not self.r1_free 
+            self.result.append(Instruction("loadAI", 'r0', pos, reg))
+        else:
+            reg = self._alloc()
+        
+        return reg
+    
+
+    def get_reg(self, inst, curr_pos):
+        regs = []
+        src_regs = []
+        for vr in inst.get_operands():
+            if not isregister(vr) or vr == 'r0':
+                regs.append(vr)
+            else:
+                reg = self._ensure(vr)
+                regs.append(reg)
+                src_regs.append(vr)
+
+        for vr in src_regs:
+            _, live_end = self.live_ranges[vr]
+            if curr_pos > live_end and vr in self.loc:
+                reg = self.loc[vr]
+                # we do not need this register anymore
+                self.free.append(reg)
+                del self.loc[vr]
+        
+        reg = vr = inst.dst
+        if vr != 'r0' and isregister(vr): #disregard r0 for allocation
+            # use r1 as destination  if vr was spilled 
+            reg = self.feasible[0] if vr in self.mem else self._alloc(vr)
+        
+        spill = None
+        if reg in self.feasible:
+            pos = self.mem[vr]
+            spill = Instruction("storeAI", reg, 'r0', pos)
+        
+        regs.append(reg)
+
+        return regs, spill
+
+
+    def allocate(self, k):
+        self.mem = {}
+        self.loc = {}
+        
+        self.free = [f'r{j}' for j in range(NUM_FEASIBLE + 1, k + 1)]
+        reg_count = self.count.items()
+        live_ranges = self.live_ranges.values()
+        max_live = get_max_live(live_ranges)       
+        tmp = [[*reg, *lr] for reg, lr in zip(reg_count, live_ranges)]
+
+        self.pos = -4
+        for e in sorted(tmp, key=cmp_to_key(range_cmp)):
+            if max_live <= k - NUM_FEASIBLE:
+                break
+            vr = e[0]
+            self.mem[vr] = self.pos
+            self.pos -= 4
+            max_live -= 1
+        
+        self.result = []
+        for j, inst in enumerate(self.instructions):
+            regs, spill = self.get_reg(inst, j)
+            self.result.append(Instruction(inst.opcode, *regs))
+
+            if spill is not None:
+                self.result.append(spill)
+        
+        return self.result
+
+
 def custom_allocator(instructions, k):
     pass
 
@@ -358,16 +450,19 @@ def main():
 
     result = None
     if args.algorithm == 's':
-        result = simple_allocator(instructions, args.registers)
+        allocator = SimpleAlloc(instructions)
+        result = allocator.allocate(args.registers)
     elif args.algorithm == 't':
-        result = top_down_allocator(instructions, args.registers)
+        allocator = TopDownAlloc(instructions)
+        result = allocator.allocate(args.registers)
     elif args.algorithm == 'b':
         allocator = BottomUpAlloc(instructions, args.registers)
         result = allocator.allocate()
     else:
         result = custom_allocator(instructions, args.registers)
 
-    write_instructions(result)
+    for i in result:
+        print(i)
 
 
 if __name__ == '__main__':
