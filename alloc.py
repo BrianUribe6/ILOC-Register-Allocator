@@ -1,5 +1,6 @@
 import argparse
 import re
+import heapq
 from collections import Counter, defaultdict
 from typing import List, NamedTuple
 from functools import cmp_to_key
@@ -14,7 +15,8 @@ class Instruction(NamedTuple):
     op2: str = None # second operand: virtual register/None/integer constant
     dst: str = None # destination register
 
-    def get_operands(self):
+    @property
+    def operands(self):
         return (self.op1, self.op2)
 
 
@@ -39,30 +41,9 @@ class Instruction(NamedTuple):
 
 class BottomUpAlloc:
 
-    def __init__(self, instructions, num_regs) -> None:
-        if num_regs < 2:
-            raise ValueError("Number of registers must be 2 or greater.")
-
+    def __init__(self, instructions) -> None:
         self.instructions = instructions
-        self.regs = [self.Register(f"r{j}") for j in range(1, num_regs + 1)]
-        self.offset = -4
-        self.available = [r for r in self.regs]
-        self.base_ptr = self.Register('r0')
-        self.location = {'r0': self.base_ptr} #set r0 aside from allocation
-        self.spilled = {}
-        self.result = []
-    
-
-    def _get_vr_usage(self):
-        """returns a mapping of each virtual register to a list of occurrences.
-        """
-        usage = defaultdict(list)
-        for i in reversed(range(len(self.instructions))):
-            for reg in self.instructions[i][1:]:
-                if isregister(reg):
-                    usage[reg].append(i)
-
-        return usage
+        self.bp = self.Register('r0')
 
 
     def _alloc(self, vr):
@@ -71,8 +52,8 @@ class BottomUpAlloc:
         time.
         """
         reg = None
-        if vr == self.base_ptr.phy_name: # avoid reassigning r0
-            return self.base_ptr
+        if vr == self.bp.phy_name: # avoid reassigning r0
+            return self.bp
             
         if len(self.available) > 0:
             reg = self.available.pop()
@@ -83,7 +64,7 @@ class BottomUpAlloc:
         
         self.location[vr] = reg
         reg.vr_name = vr
-        # reg.next = -1 #avoids reusing this register for the next operand
+        reg.next = -1 #avoids reusing this register for the next operand
 
         return reg
 
@@ -103,7 +84,7 @@ class BottomUpAlloc:
             pos = self.spilled[vr]
             reg = self._alloc(vr)
             self.result.append(
-                Instruction("loadAI", self.base_ptr.phy_name, pos, reg.phy_name)
+                Instruction("loadAI", self.bp.phy_name, pos, reg.phy_name)
             )
             del self.spilled[vr]
         else:
@@ -117,7 +98,7 @@ class BottomUpAlloc:
         vr = reg.vr_name
         self.spilled[vr] = self.offset
         self.result.append(
-            Instruction("storeAI", reg.phy_name, self.base_ptr.phy_name, self.offset)
+            Instruction("storeAI", reg.phy_name, self.bp.phy_name, self.offset)
         )
         reg.vr_name = None
         reg.next = float('inf')
@@ -125,7 +106,7 @@ class BottomUpAlloc:
     
 
     def _free(self, reg):
-        if reg == self.base_ptr:
+        if reg == self.bp:
             return
         if reg.vr_name:
             del self.location[reg.vr_name]
@@ -134,29 +115,39 @@ class BottomUpAlloc:
         self.available.append(reg)
 
 
-    def allocate(self):
+    def allocate(self, num_regs):
         """Returns resulting list of instructions after performing register
         reallocation and assignment.
-        """                    
-        next_use = self._get_vr_usage()
+        """
+        if num_regs < 2:
+            raise ValueError("Number of registers must be 2 or greater.")
+        
+        self.regs = [self.Register(f"r{j}") for j in range(1, num_regs + 1)]
+        self.offset = -4
+        self.available = [r for r in self.regs]
+        self.location = {'r0': self.bp} #set r0 aside from allocation
+        self.spilled = {}
+        self.result = []
+    
+        next_use = get_vr_usage(self.instructions)
         for i in self.instructions:
             new_instr = [i.opcode]
             # ensure both operands are in physical registers 
-            for vr in i.get_operands():
+            for vr in i.operands:
                 name = vr
                 if isregister(vr):
                     reg = self._ensure(vr)
                     name = reg.phy_name
                 new_instr.append(name)
             # check if we can reuse any operand as destination
-            for vr in i.get_operands():
+            for vr in i.operands:
                 if isregister(vr):
                     reg = self.location[vr]
                     if not next_use[vr]:
                         self._free(reg)
                     else: # we couldn't reuse so update its next usage
                         reg.next = next_use[vr].pop() 
-            
+            # allocate register for destination
             dst = vr = i.dst
             if isregister(vr):
                 reg = self._alloc(vr)
@@ -234,6 +225,7 @@ class SimpleAlloc:
         allocd, memory = {'r0': self.bp}, {}
         offset = -4
         total_vars = len(self.count) - (self.bp in self.count)
+        # if we have enough registers do not reserve feasible registers.
         j = NUM_FEASIBLE + 1 if total_vars > k else 1
         for p in self.count.most_common():
             reg, _ = p
@@ -283,7 +275,6 @@ class SimpleAlloc:
             self.loc.clear()
             self.used[0] = self.used[1] = False
             
-
         return self.result
 
 
@@ -331,7 +322,7 @@ class TopDownAlloc:
     def get_reg(self, inst, curr_pos):
         regs = []
         src_regs = []
-        for vr in inst.get_operands():
+        for vr in inst.operands:
             if not isregister(vr) or vr == 'r0':
                 regs.append(vr)
             else:
@@ -340,8 +331,8 @@ class TopDownAlloc:
                 src_regs.append(vr)
 
         for vr in src_regs:
-            _, live_end = self.live_ranges[vr]
-            if curr_pos > live_end and vr in self.loc:
+            live = self.live_ranges[vr]
+            if curr_pos > live.end and vr in self.loc:
                 reg = self.loc[vr]
                 # we do not need this register anymore
                 self.free.append(reg)
@@ -392,10 +383,131 @@ class TopDownAlloc:
         return self.result
 
 
-def custom_allocator(instructions, k):
-    pass
+class LinearScanAlloc:
+    
+    class LiveInterval(NamedTuple):
+        name: str
+        start: int
+        end: int
+
+        def __lt__(self, x) -> bool:
+            return self.end < x.end
+        
+
+        def __gt__(self, x) -> bool:
+            return self.end > x.end
 
 
+    def __init__(self, instructions) -> None:
+        self.instructions = instructions
+        self.live_ranges = get_live_ranges(self.instructions)
+        self.active = None
+        self.free_reg = None
+        self.vr_to_reg = None
+        self.sp = None
+        self.bp = 'r0'
+
+        try:
+            del self.live_ranges['r0']
+        except KeyError:
+            pass
+
+
+    def make_interval(self, key):
+        return self.LiveInterval(key, *self.live_ranges[key])
+
+    def allocate(self, k):
+        self.vr_to_reg = {}
+        self.location = {}
+        self.active = []
+        self.sp = -4
+        start, end = 1, k + 1
+        
+        if len(self.live_ranges) > k:
+            # reserve feasible registers
+            start = NUM_FEASIBLE + 1
+            k -= NUM_FEASIBLE
+        
+        if k < 2:
+            # we need to spill everything allocation is done
+            pos = 0
+            self.location = {vr: (pos := pos - 4) for vr in self.live_ranges}
+            return self.rewrite_instructions()
+
+        self.free_reg = [f'r{j}' for j in range(start, end)]
+
+        for i in map(self.make_interval, self.live_ranges):
+            self.expire_old_intervals(i)
+            if len(self.active) == k:
+                self.spill_at_interval(i)
+            else:
+                reg = self.free_reg.pop()
+                self.vr_to_reg[i.name] = reg
+                heapq.heappush(self.active, i)
+        
+        return self.rewrite_instructions()
+                
+
+    def expire_old_intervals(self, i):
+        while self.active:
+            j = heapq.heappop(self.active)
+            if j.end >= i.start:
+                heapq.heappush(self.active, j)
+                return
+            phy_reg = self.vr_to_reg[j.name]
+            self.free_reg.append(phy_reg)
+
+
+    def spill_at_interval(self, i):
+        spill = max(self.active)
+        if spill.end > i.end:
+            self.vr_to_reg[i.name] = self.vr_to_reg[spill.name]
+            self.active.remove(spill)
+            
+            self.location[spill.name] = self.sp
+            del self.vr_to_reg[spill.name]
+            heapq.heappush(self.active, i)
+        else:
+            self.location[i.name] = self.sp
+        
+        self.sp -= 4
+
+
+    def rewrite_instructions(self):
+        result = []
+        fregs = ['r1', 'r2']
+        flag = True # prevents both registers being used for the same operand
+        for i in self.instructions:
+            new_instr = [i.opcode]
+            for vr in i.operands:
+                reg = vr
+                if vr in self.location:
+                    reg = fregs[flag]
+                    flag = not flag
+                    pos = self.location[vr]
+                    result.append(Instruction('loadAI', 'r0', pos, reg))
+                elif vr in self.vr_to_reg:
+                    reg = self.vr_to_reg[vr]
+                new_instr.append(reg)
+            
+            reg = vr = i.dst
+            spill = None
+            if vr in self.location:
+                reg = fregs[flag]
+                flag = not flag
+                pos = self.location[vr]
+                spill = Instruction('storeAI', reg, 'r0', pos)
+            elif vr in self.vr_to_reg:
+                reg = self.vr_to_reg[vr]
+            
+            new_instr.append(reg)
+            result.append(Instruction(*new_instr))
+            if spill:
+                result.append(spill)
+        
+        return result
+
+                 
 def read_instructions(filename) -> List[Instruction]:
     """read instructions from an ILOC file.
     """
@@ -425,6 +537,12 @@ def read_instructions(filename) -> List[Instruction]:
             
 
 def main():
+    allocators = {
+        's': SimpleAlloc,
+        't': TopDownAlloc,
+        'b': BottomUpAlloc,
+        'o': LinearScanAlloc,
+    }
     parser = argparse.ArgumentParser(
         description='ILOC register allocator',
         formatter_class=argparse.RawTextHelpFormatter
@@ -434,7 +552,7 @@ def main():
         help='number of registers for the target machine'
     )
     parser.add_argument(
-        'algorithm', type=str, choices=['b', 's', 't', 'o'],
+        'algorithm', type=str, choices=allocators,
         help='algorithm used to allocated registers\n'
             'b: bottom-up approach\n'
             's: simple top-down (no live ranges)\n'
@@ -443,23 +561,16 @@ def main():
     )
     parser.add_argument(
         'filename', type=str,
-        help='name of the file containing the ILOC program'
+        help='key of the file containing the ILOC program'
     )
     args = parser.parse_args()
-    instructions = read_instructions(args.filename)
 
-    result = None
-    if args.algorithm == 's':
-        allocator = SimpleAlloc(instructions)
-        result = allocator.allocate(args.registers)
-    elif args.algorithm == 't':
-        allocator = TopDownAlloc(instructions)
-        result = allocator.allocate(args.registers)
-    elif args.algorithm == 'b':
-        allocator = BottomUpAlloc(instructions, args.registers)
-        result = allocator.allocate()
-    else:
-        result = custom_allocator(instructions, args.registers)
+    if args.registers < 2:
+        raise argparse.ArgumentTypeError("number of register must be at least 2.")
+
+    instructions = read_instructions(args.filename)
+    Allocator = allocators[args.algorithm]
+    result = Allocator(instructions).allocate(args.registers)
 
     for i in result:
         print(i)

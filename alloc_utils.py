@@ -1,6 +1,7 @@
-from collections import Counter, defaultdict
-from typing import Any, List
+from collections import Counter, defaultdict, namedtuple
 
+
+Interval = namedtuple('Interval', ["start", "end"])
 
 def isregister(string) -> bool:
     """Returns True if string is not an integer constant."""
@@ -10,7 +11,7 @@ def isregister(string) -> bool:
 def range_cmp(a, b):
     """compares register according to their count and live ranges. If two
     registers have the same count then the one with the larger live range is
-    considered smaller and thefore chosen first by a sorting function.
+    considered smaller and therefore chosen first by a sorting function.
 
     inputs: a list containing register name, count, range start, range end.
     """
@@ -35,7 +36,7 @@ def get_reg_count(instructions) -> Counter:
     return count
 
 
-def get_live_ranges(instructions):
+def get_live_ranges(instructions,):
     """Returns a mapping of each vr register to its live range"""
     live_ranges = {}
     for j, i in enumerate(instructions):
@@ -47,10 +48,8 @@ def get_live_ranges(instructions):
                     live_ranges[op][1] = j
     
     for vr in live_ranges:
-        #a virtual register is live on exit between its declaration
-        #and its last usage (non inclusive)
         live_ranges[vr][1] -= 1
-        live_ranges[vr] = tuple(live_ranges[vr])
+        live_ranges[vr] = Interval(*live_ranges[vr])
     
     return live_ranges
 

@@ -10,7 +10,6 @@ from functools import cmp_to_key
 
 COMMAND = './sim -i 1024'
 DIR = r'test_blocks'
-NUM_BLOCKS = 6
 Test = namedtuple("Test", ["block_name", "instruction", "cmd_input", "expected"])
 
 num_registers = [5, 10, 15]
@@ -20,26 +19,24 @@ testcases = [
     ("1 1", ["12"]),
     ("1 1", ["12"]),
     ("0 1", ['0', '1', '1', '2', '3', '5', '8', '13', '21', '34', '55', '89']),
-    ("3 5", ['3', '5', '8', '13', '21', '34', '55', '89', '144', '233', '377', '610'])
+    ("3 5", ['3', '5', '8', '13', '21', '34', '55', '89', '144', '233', '377', '610']),
+    (""   , ["-10"])
 ]
 
 if platform.system() == "Windows":
     #make use of Windows Subsystem for Linux to execute ILOC simulator
     COMMAND = f"wsl {COMMAND}" 
 
-def instr_to_bytes(instructions: List[alloc.Instruction]):
-    """converts instruction List into a byte string suitable for the terminal
-    """
-    return '\n'.join(str(i) for i in instructions).encode()
-
 
 def get_output(cmd_input, alloc_result):
     cmd = f"{COMMAND} {cmd_input}"
-    input_txt = instr_to_bytes(alloc_result)
+    input_txt = '\n'.join(str(i) for i in alloc_result).encode()
     result = subprocess.run(cmd, input=input_txt, capture_output=True)
 
     if result.returncode != 0:
-        raise ValueError(f"{cmd} failed with status code {result.returncode}.")
+        err_msg = ''.join(result.stderr.decode())
+        raise ValueError(f"{cmd} failed with status code {result.returncode}."
+                         f"{err_msg}\n")
 
     return result.stdout.decode().strip().split('\n')
 
@@ -62,7 +59,7 @@ class TestUtils(unittest.TestCase):
     def test_get_live_range(self):
         """get_live_range should outputs a valid list of live ranges
         """
-        instructions = alloc.read_instructions(f"{DIR}/ri1.txt")
+        instructions = alloc.read_instructions(f"{DIR}/block6.i")
         result = get_live_ranges(instructions)
         expected = {
             'r0': (0, 11),
@@ -128,11 +125,11 @@ class AllocatorTest(unittest.TestCase):
                 ) 
 
     
-    def test_bottom_up_allocator(self):
+    def test_bottom_up_allocator(self):        
         for t in get_tests():
             for k in num_registers:
-                allocator = alloc.BottomUpAlloc(t.instruction, k)
-                result = allocator.allocate()
+                allocator = alloc.BottomUpAlloc(t.instruction)
+                result = allocator.allocate(k)
                 out = get_output(t.cmd_input, result)[:-1]
                 self.assertEqual(
                     t.expected, out,
@@ -141,4 +138,12 @@ class AllocatorTest(unittest.TestCase):
 
 
     def test_custom_allocator(self):
-        self.skipTest("Not implemented")
+        for t in get_tests():
+            for k in num_registers:
+                allocator = alloc.LinearScanAlloc(t.instruction)
+                result = allocator.allocate(k)
+                out = get_output(t.cmd_input, result)[:-1]
+                self.assertEqual(
+                    t.expected, out,
+                    f"{t.block_name} failed with k = {k}"
+                )
