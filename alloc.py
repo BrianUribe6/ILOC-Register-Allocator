@@ -1,13 +1,26 @@
 import argparse
 import re
 import heapq
+import time
 from collections import Counter, defaultdict
 from typing import List, NamedTuple
 from functools import cmp_to_key
 from alloc_utils import *
 
 
+
 NUM_FEASIBLE = 2
+
+def timer(fun):
+    def wrapper(*args):
+        tic = time.time()
+        res = fun(*args)
+        toc = time.time()
+        duration = (toc - tic) * 1000
+        print(f"{fun.__name__} ran in {duration} ms. using {args[1]} registers")
+        return res
+    return wrapper
+
 
 class Instruction(NamedTuple):
     opcode: str     # instruction name
@@ -114,7 +127,7 @@ class BottomUpAlloc:
         reg.next = float('inf')
         self.available.append(reg)
 
-
+    @timer
     def allocate(self, num_regs):
         """Returns resulting list of instructions after performing register
         reallocation and assignment.
@@ -239,7 +252,7 @@ class SimpleAlloc:
         
         return allocd, memory
 
-
+    @timer
     def allocate(self, num_registers):
         if num_registers < NUM_FEASIBLE:
             raise ValueError(f"number of register must be at least {NUM_FEASIBLE}.")
@@ -352,7 +365,7 @@ class TopDownAlloc:
 
         return regs, spill
 
-
+    @timer
     def allocate(self, k):
         self.mem = {}
         self.loc = {}
@@ -415,7 +428,8 @@ class LinearScanAlloc:
 
     def make_interval(self, key):
         return self.LiveInterval(key, *self.live_ranges[key])
-
+    
+    @timer
     def allocate(self, k):
         self.vr_to_reg = {}
         self.location = {}
@@ -430,8 +444,9 @@ class LinearScanAlloc:
         
         if k < 2:
             # we need to spill everything allocation is done
-            pos = 0
-            self.location = {vr: (pos := pos - 4) for vr in self.live_ranges}
+            for vr in self.live_ranges:
+                self.location[vr] = self.sp
+                self.sp -=4
             return self.rewrite_instructions()
 
         self.free_reg = [f'r{j}' for j in range(start, end)]
@@ -544,7 +559,7 @@ def main():
         'o': LinearScanAlloc,
     }
     parser = argparse.ArgumentParser(
-        description='ILOC register allocator',
+        description='Brian Uribe - ILOC register allocator',
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument(
@@ -561,7 +576,7 @@ def main():
     )
     parser.add_argument(
         'filename', type=str,
-        help='key of the file containing the ILOC program'
+        help='path of the file containing the ILOC program'
     )
     args = parser.parse_args()
 

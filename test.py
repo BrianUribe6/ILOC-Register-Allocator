@@ -1,9 +1,10 @@
+from os import sep, stat
 import platform
 import subprocess
 from typing import List
 import unittest
 import alloc
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from alloc_utils import get_live_ranges, get_max_live, range_cmp
 from functools import cmp_to_key
 
@@ -42,6 +43,7 @@ def get_output(cmd_input, alloc_result):
 
 
 def get_tests():
+    res = []
     for b, testcase in enumerate(testcases):
         input_txt, expected_output = testcase
         b_name = f'block{b}.i'
@@ -51,7 +53,9 @@ def get_tests():
             cmd_input=input_txt,
             expected=expected_output
         )
-        yield test
+        res.append(test)
+    
+    return res
 
 
 class TestUtils(unittest.TestCase):
@@ -99,42 +103,54 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(input_pairs, expected)
 
 
+def print_stats(stats):
+    print("|BLOCK NAME|", "|5|", "|10|", "|15|", sep='\t')
+    print("****************************************")
+    for block in stats:
+        print(block, end='\t')
+        for res in stats[block]:
+            cycles = res.split()[-2]
+            print(cycles, end='\t')
+        print("")
+
 class AllocatorTest(unittest.TestCase):
   
     def test_simple_allocator(self):
         for t in get_tests():
+            print(t.block_name)
             for k in num_registers:
                 allocator = alloc.SimpleAlloc(t.instruction)
                 result = allocator.allocate(k)
-                out = get_output(t.cmd_input, result)[:-1]
+                out = get_output(t.cmd_input, result)
                 self.assertEqual(
-                    t.expected, out,
+                    t.expected, out[:-1],
                     f"{t.block_name} failed with k = {k}"
-                ) 
+                )
 
 
     def test_top_down_allocator(self):
         for t in get_tests():
+            print(t.block_name)
             for k in num_registers:
                 allocator = alloc.TopDownAlloc(t.instruction)
                 result = allocator.allocate(k)
-                out = get_output(t.cmd_input, result)[:-1]
+                out = get_output(t.cmd_input, result)
                 self.assertEqual(
-                    t.expected, out,
+                    t.expected, out[:-1],
                     f"{t.block_name} failed with k = {k}"
-                ) 
+                )
 
     
-    def test_bottom_up_allocator(self):        
+    def test_bottom_up_allocator(self):
         for t in get_tests():
             for k in num_registers:
                 allocator = alloc.BottomUpAlloc(t.instruction)
                 result = allocator.allocate(k)
-                out = get_output(t.cmd_input, result)[:-1]
+                out = get_output(t.cmd_input, result)
                 self.assertEqual(
-                    t.expected, out,
+                    t.expected, out[:-1],
                     f"{t.block_name} failed with k = {k}"
-                ) 
+                )
 
 
     def test_custom_allocator(self):
@@ -142,8 +158,8 @@ class AllocatorTest(unittest.TestCase):
             for k in num_registers:
                 allocator = alloc.LinearScanAlloc(t.instruction)
                 result = allocator.allocate(k)
-                out = get_output(t.cmd_input, result)[:-1]
+                out = get_output(t.cmd_input, result)
                 self.assertEqual(
-                    t.expected, out,
+                    t.expected, out[:-1],
                     f"{t.block_name} failed with k = {k}"
                 )
